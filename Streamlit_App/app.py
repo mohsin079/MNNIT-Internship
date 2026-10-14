@@ -39,10 +39,10 @@ with st.form("loan_application_form"):
         self_employed = st.selectbox("Self Employed", ["No", "Yes"])
 
     with col2:
-        applicant_income = st.number_input("Applicant Income ($/mo)", min_value=0, value=5000, step=500)
-        coapplicant_income = st.number_input("Coapplicant Income ($/mo)", min_value=0, value=0, step=500)
-        loan_amount = st.number_input("Loan Amount (in thousands)", min_value=1, value=150, step=10)
-        loan_amount_term = st.selectbox("Loan Term (Months)", [360, 180, 120, 240, 300, 480])
+        applicant_income = st.number_input("Applicant Income (₹/month)", min_value=0, value=5000, step=500)
+        coapplicant_income = st.number_input("Coapplicant Income (₹/month)", min_value=0, value=0, step=500)
+        loan_amount = st.number_input("Loan Amount (₹ in thousands, e.g. 150 = ₹1,50,000)", min_value=1, max_value=700, value=150, step=10)
+        loan_amount_term = st.selectbox("Loan Term (Months)", [360, 12, 24, 36, 48, 60, 84, 120, 180, 240, 300, 480])
         credit_history = st.selectbox("Credit History", ["1.0", "0.0"], format_func=lambda x: "Good (1.0)" if x == "1.0" else "Bad / No History (0.0)")
         property_area = st.selectbox("Property Area", ["Urban", "Semiurban", "Rural"])
 
@@ -53,26 +53,44 @@ if submitted:
     total_income = applicant_income + coapplicant_income
 
     # Match feature names used in training
+    emi_ratio = (loan_amount * 1000 / loan_amount_term) / max(total_income, 1)
+
     input_data = pd.DataFrame([{
         "Gender": gender,
         "Married": married,
-        "Dependents": dependents,
         "Education": education,
         "Self_Employed": self_employed,
-        "ApplicantIncome": applicant_income,
-        "CoapplicantIncome": coapplicant_income,
         "LoanAmount": loan_amount,
         "Loan_Amount_Term": loan_amount_term,
         "Credit_History": str(credit_history),
         "Property_Area": property_area,
-        "TotalIncome": total_income
+        "TotalIncome": total_income,
+        "EMI_Ratio": emi_ratio
     }])
 
     # Generate Prediction
     prediction = model.predict(input_data)[0]
     probabilities = model.predict_proba(input_data)[0]
 
+    # Affordability guardrail: EMI (principal / months) vs total monthly income
+    emi = loan_amount * 1000 / loan_amount_term
+    burden = emi / max(total_income, 1)
+    approval_prob = probabilities[1]
+    # More dependents -> less disposable income -> stricter EMI limits
+    dep = 3 if dependents == "3+" else int(dependents)
+    reject_limit = 0.50 - 0.05 * dep
+    cap_limit = 0.40 - 0.05 * dep
+    if burden > reject_limit:
+        prediction, approval_prob = 0, min(approval_prob, 0.05)
+    elif burden > cap_limit:
+        approval_prob = min(approval_prob, 0.40)
+        prediction = 0 if approval_prob < 0.5 else prediction
+
     st.markdown("---")
+    st.caption(f"Estimated monthly EMI: ₹{emi:,.0f} ({burden:.0%} of total monthly income)")
+    if burden > reject_limit:
+        st.warning(f"EMI is more than {reject_limit:.0%} of income for {dependents} dependent(s), which is not affordable.")
+    probabilities = [1 - approval_prob, approval_prob]
     if prediction == 1:
         st.success(f"**Status: Approved** (Approval Probability: {probabilities[1]:.2%})")
     else:

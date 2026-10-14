@@ -7,11 +7,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, FunctionTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import balanced_accuracy_score, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
 # 1. Load Dataset
 # Ensure your dataset is downloaded into the Dataset folder
@@ -38,12 +38,14 @@ y = df[target_column]
 # 3. Feature Engineering: Total Income
 if "ApplicantIncome" in X.columns and "CoapplicantIncome" in X.columns:
     X["TotalIncome"] = X["ApplicantIncome"] + X["CoapplicantIncome"]
+X = X.drop(columns=["Dependents", "ApplicantIncome", "CoapplicantIncome"])
+X["EMI_Ratio"] = (X["LoanAmount"] * 1000 / X["Loan_Amount_Term"]) / X["TotalIncome"]
 
 # Identify column types
-numeric_features = ["ApplicantIncome", "CoapplicantIncome", "LoanAmount", "Loan_Amount_Term", "TotalIncome"]
+numeric_features = ["LoanAmount", "Loan_Amount_Term", "TotalIncome", "EMI_Ratio"]
 numeric_features = [col for col in numeric_features if col in X.columns]
 
-categorical_features = ["Gender", "Married", "Dependents", "Education", "Self_Employed", "Credit_History", "Property_Area"]
+categorical_features = ["Gender", "Married", "Education", "Self_Employed", "Credit_History", "Property_Area"]
 categorical_features = [col for col in categorical_features if col in X.columns]
 
 # Ensure Credit_History is treated as categorical/discrete string
@@ -51,8 +53,10 @@ if "Credit_History" in X.columns:
     X["Credit_History"] = X["Credit_History"].astype(str)
 
 # 4. Preprocessing Pipelines
+# log1p tames heavy skew/outliers so extreme inputs can't force a rejection
 numeric_transformer = Pipeline(steps=[
     ("imputer", SimpleImputer(strategy="median")),
+    ("log", FunctionTransformer(np.log1p, validate=False)),
     ("scaler", StandardScaler())
 ])
 
@@ -73,9 +77,9 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 # 6. Model Training & Comparison (Requirement: At least 3 models)
 models = {
-    "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
-    "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
-    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric="logloss", random_state=42)
+    "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000, class_weight="balanced", C=0.3),
+    "Random Forest": RandomForestClassifier(n_estimators=300, max_depth=5, min_samples_leaf=10, class_weight="balanced", random_state=42),
+    "XGBoost": XGBClassifier(eval_metric="logloss", random_state=42)
 }
 
 best_model = None
@@ -96,14 +100,16 @@ for name, clf in models.items():
     prec = precision_score(y_test, y_pred)
     rec = recall_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred)
+    bal = balanced_accuracy_score(y_test, y_pred)
+    print("BAL",name,round(bal,3))
     roc = roc_auc_score(y_test, y_prob)
 
     print(f"\nModel: {name}")
     print(f"Accuracy:  {acc:.4f} | Precision: {prec:.4f}")
     print(f"Recall:    {rec:.4f} | F1-Score:  {f1:.4f} | ROC-AUC: {roc:.4f}")
 
-    if f1 > best_f1:
-        best_f1 = f1
+    if bal > best_f1:
+        best_f1 = bal
         best_model = pipeline
         best_model_name = name
 
